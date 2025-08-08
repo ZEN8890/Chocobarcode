@@ -9,6 +9,7 @@ import random
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import threading
+import time
 
 # --- Konfigurasi Awal (Bisa disesuaikan di GUI nanti) ---
 DEFAULT_INPUT_FILE = 'produk_barcode_lengkap.xlsx'
@@ -23,6 +24,9 @@ IMAGE_HEIGHT_PIXELS = 180
 # --- Fungsi Logika Barcode ---
 
 def calculate_ean13_checksum(first12digits):
+    """
+    Menghitung digit checksum untuk 12 digit pertama barcode EAN-13.
+    """
     sum_odd = 0
     sum_even = 0
     for i, digit in enumerate(first12digits):
@@ -37,9 +41,7 @@ def calculate_ean13_checksum(first12digits):
 def generate_valid_ean13_string(barcode_number):
     """
     Memvalidasi dan mengoreksi barcode agar menjadi 13 digit EAN-13 yang valid secara checksum.
-    Fungsi ini TIDAK akan menambahkan leading zero jika input kurang dari 12 digit.
-    Ini akan mengembalikan string 13 digit atau None jika input tidak valid untuk EAN-13
-    (misal: bukan angka, atau terlalu pendek/panjang dan tidak bisa dikoreksi ke 13 digit).
+    Fungsi ini akan mengembalikan string 13 digit atau None jika input tidak valid.
     """
     barcode_str = str(barcode_number).strip()
     
@@ -65,19 +67,16 @@ def generate_valid_ean13_string(barcode_number):
         return valid_barcode
     
     else: 
-        # Untuk kasus lain (kurang dari 12 atau lebih dari 13), kita tidak mengoreksi dengan leading zero.
-        # Barcode ini akan dianggap "tidak valid" pada tahap ini dan akan memicu generate barcode baru.
+        # Untuk kasus lain (kurang dari 12 atau lebih dari 13)
         return None 
 
 def generate_new_unique_ean13(existing_barcodes_set, log_callback=None):
     """
     Menghasilkan barcode EAN-13 baru yang unik dan valid,
-    memastikan tidak ada di dalam set existing_barcodes_set DAN tidak ada leading zero.
+    memastikan tidak ada di dalam set existing_barcodes_set.
     """
     while True:
         # Hasilkan 12 digit angka acak. EAN-13 dimulai dengan 12 digit + 1 digit checksum.
-        # Untuk mencegah leading zero, kita mulai dari 10^11 (angka 1 diikuti 11 nol)
-        # hingga 10^12 - 1 (angka 9 diikuti 11 sembilan).
         random_12_digits = str(random.randint(10**11, 10**12 - 1))
         
         # Hitung checksum untuk 12 digit acak ini
@@ -87,7 +86,7 @@ def generate_new_unique_ean13(existing_barcodes_set, log_callback=None):
         # Periksa apakah barcode yang baru dihasilkan ini unik
         if new_ean13 not in existing_barcodes_set:
             if log_callback:
-                log_callback(f"    Info: Barcode baru yang unik (tanpa leading zero) dihasilkan: '{new_ean13}'.")
+                log_callback(f"    Info: Barcode baru yang unik dihasilkan: '{new_ean13}'.")
             return new_ean13
         else:
             if log_callback:
@@ -95,6 +94,9 @@ def generate_new_unique_ean13(existing_barcodes_set, log_callback=None):
 
 
 def generate_ean13_image_buffer(barcode_number_str):
+    """
+    Membuat gambar barcode dan mengembalikannya sebagai buffer memori.
+    """
     ean = EAN13(barcode_number_str, writer=ImageWriter()) 
     buffer = BytesIO()
     ean.write(buffer, {
@@ -137,9 +139,8 @@ class BarcodeApp:
         self.output_folder_entry.insert(0, os.getcwd()) 
         ttk.Button(self.file_frame, text="Browse Output Folder", command=self.browse_output_folder).grid(row=1, column=2, padx=5, pady=5)
         
-        # Tombol untuk Export Format Kosong
         self.export_format_button = ttk.Button(self.file_frame, text="Export Format Kosong", command=self.export_empty_format_thread)
-        self.export_format_button.grid(row=2, column=0, columnspan=3, pady=10) # Ditempatkan di bawah browse buttons
+        self.export_format_button.grid(row=2, column=0, columnspan=3, pady=10)
 
         self.file_frame.grid_columnconfigure(1, weight=1)
 
@@ -196,7 +197,7 @@ class BarcodeApp:
     def _set_gui_processing_state(self, is_processing):
         state = 'disabled' if is_processing else 'normal'
         self.start_button.config(state=state)
-        self.export_format_button.config(state=state) # Nonaktifkan tombol export juga
+        self.export_format_button.config(state=state)
         if is_processing:
             self.log_text.config(state='normal')
             self.log_text.delete('1.0', tk.END)
@@ -238,7 +239,7 @@ class BarcodeApp:
 
     def _generate_barcodes_process(self, input_file, output_file):
         self.log_message("Memulai proses pembuatan barcode Excel...")
-        self.log_message("PENTING: Barcode yang dihasilkan akan selalu EAN-13 yang valid secara checksum.")
+        self.log_message("PENTING: Barcode yang valid (13 digit, checksum benar) dari file input akan dipertahankan.")
         self.log_message(f"File output akan disimpan sebagai: {output_file}")
 
         try:
@@ -260,11 +261,18 @@ class BarcodeApp:
             ws.column_dimensions['B'].width = 20
             ws.column_dimensions['C'].width = IMAGE_WIDTH_PIXELS / 7 
 
+            # Mengumpulkan barcode yang sudah ada untuk memeriksa duplikasi.
+            # Menggunakan set untuk pencarian yang efisien.
             processed_barcodes = set()
             generated_new_barcode_count = 0
             failed_processing_count = 0
             successful_processing_count = 0
-
+            
+            # --- START: Perbaikan logika pemrosesan barcode ---
+            
+            # Pra-proses semua barcode dari input untuk mengidentifikasi duplikat awal
+            existing_barcodes = df[BARCODE_COLUMN_NAME].astype(str).tolist()
+            
             for index, row in df.iterrows():
                 product_name = str(row[PRODUCT_NAME_COLUMN_NAME]).strip()
                 original_barcode = str(row[BARCODE_COLUMN_NAME]).strip()
@@ -276,20 +284,18 @@ class BarcodeApp:
                     # Coba validasi barcode asli dari input Excel
                     validated_barcode = generate_valid_ean13_string(original_barcode)
 
-                    if validated_barcode: # Jika barcode asli valid EAN-13 (12 atau 13 digit)
-                        if validated_barcode.startswith('0') and len(validated_barcode) == 13:
-                            self.log_message(f"    Peringatan: Barcode asli '{original_barcode}' memiliki leading zero. Menggenerasi barcode baru tanpa leading zero.")
-                            final_barcode_for_excel = generate_new_unique_ean13(processed_barcodes, self.log_message)
-                            generated_new_barcode_count += 1
-                        elif validated_barcode in processed_barcodes:
-                            self.log_message(f"    Peringatan: Barcode EAN-13 yang divalidasi '{validated_barcode}' sudah ada. Mencoba menghasilkan barcode baru yang unik.")
+                    if validated_barcode: # Barcode asli valid atau sudah dikoreksi checksum
+                        if validated_barcode in processed_barcodes:
+                            self.log_message(f"    Peringatan: Barcode EAN-13 yang divalidasi '{validated_barcode}' adalah duplikat. Menghasilkan barcode baru.")
                             final_barcode_for_excel = generate_new_unique_ean13(processed_barcodes, self.log_message)
                             generated_new_barcode_count += 1
                         else:
+                            # Jika valid dan belum diproses, gunakan barcode ini
                             final_barcode_for_excel = validated_barcode
                             self.log_message(f"    Info: Barcode awal divalidasi dan digunakan: '{final_barcode_for_excel}'.")
-                    else: # Jika barcode asli tidak valid EAN-13 (kurang/lebih dari 12/13 digit atau non-digit)
-                        self.log_message(f"    Peringatan: Barcode asli '{original_barcode}' tidak valid atau terlalu pendek/panjang. Menggenerasi barcode baru.")
+                    else:
+                        # Jika barcode asli tidak valid
+                        self.log_message(f"    Peringatan: Barcode asli '{original_barcode}' tidak valid atau terlalu pendek/panjang. Menghasilkan barcode baru.")
                         final_barcode_for_excel = generate_new_unique_ean13(processed_barcodes, self.log_message)
                         generated_new_barcode_count += 1
 
@@ -313,11 +319,9 @@ class BarcodeApp:
                         self.log_message(f"    Berhasil dibuat: Barcode EAN-13 '{final_barcode_for_excel}' dan gambar disisipkan di baris {current_row_in_excel}.")
                         successful_processing_count += 1
                     else:
-                        # Ini seharusnya tidak tercapai jika generate_new_unique_ean13 selalu mengembalikan nilai
                         self.log_message(f"    Gagal memproses barcode '{original_barcode}': Barcode final tidak dapat ditentukan.")
                         ws.append([product_name, original_barcode, "GAGAL GENERATE BARCODE"])
                         failed_processing_count += 1
-
 
                 except Exception as e:
                     self.log_message(f"    Gagal memproses barcode '{original_barcode}': {str(e)}")
@@ -325,17 +329,19 @@ class BarcodeApp:
                     failed_processing_count += 1
                 
                 self.root.after(0, lambda idx=index: self.progress_bar.config(value=idx + 1))
+            
+            # --- END: Perbaikan logika pemrosesan barcode ---
 
             wb.save(output_file)
             
             self.log_message(f"\nProses selesai! File Excel '{output_file}' telah berhasil dibuat.")
             self.log_message(f"Jumlah produk yang berhasil diproses: {successful_processing_count}")
-            self.log_message(f"Jumlah barcode baru yang dihasilkan karena duplikasi: {generated_new_barcode_count}")
+            self.log_message(f"Jumlah barcode baru yang dihasilkan: {generated_new_barcode_count}")
             self.log_message(f"Jumlah barcode yang gagal diproses: {failed_processing_count}")
 
             final_message = f"Proses selesai!\n" \
                             f"Total berhasil: {successful_processing_count}\n" \
-                            f"Baru digenerate (duplikat): {generated_new_barcode_count}\n" \
+                            f"Baru digenerate: {generated_new_barcode_count}\n" \
                             f"Gagal: {failed_processing_count}"
             
             self.status_label.config(text="Status: Selesai!")

@@ -1,4 +1,4 @@
-('C:\\vscode_projek\\projek\\excel_to_ean13\\build\\chocobarcode\\PYZ-00.pyz',
+('C:\\vscode_projek\\final_build\\Chocobarcode\\build\\chocobarcode\\PYZ-00.pyz',
  [('Levenshtein',
    'C:\\Users\\Steven\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\Levenshtein\\__init__.py',
    'PYMODULE'),
